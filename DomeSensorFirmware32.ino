@@ -1,4 +1,4 @@
-#define USE_DEBUG
+//#define USE_DEBUG
 //#define USE_DOME_SENSOR_DEBUG
 #include "ReelTwo.h"
 #include "drive/DomeSensorRing.h"
@@ -57,6 +57,9 @@ DomeSensorRing sDomePosition;
 void setup()
 {
     REELTWO_READY();
+#ifndef USE_DEBUG
+    Serial.begin(DEFAULT_BAUD_RATE);
+#endif
     if (sPreferences.begin("domesensor"))
     {
         DomeSensorSettings settings;
