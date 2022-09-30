@@ -9,8 +9,7 @@
 // CONFIGURABLE OPTIONS
 ///////////////////////////////////
 
-// If debug is enabled the serial baud rate will be 115200
-#define SERIAL_BAUD_RATE                    115200
+#define SERIAL_BAUD_RATE                    57600
 #define CONSOLE_BUFFER_SIZE                 300
 #define COMMAND_BUFFER_SIZE                 256
 
@@ -47,6 +46,7 @@ static char sCmdBuffer[COMMAND_BUFFER_SIZE];
 static uint32_t sEndTesting;
 static bool sTestOne;
 static unsigned sSensorMask;
+static bool sVerbose;
 
 ///////////////////////////////////
 
@@ -82,9 +82,25 @@ void setup()
     {
         Serial.println("Failed to initialize preferences.");
     }
-    REPORT_SERIAL.begin(SERIAL_BAUD_RATE, SERIAL_8N1, RXD1_PIN, TXD1_PIN);
+    REPORT_SERIAL.begin(sSettings.fBaudRate, SERIAL_8N1, RXD1_PIN, TXD1_PIN);
 
     SetupEvent::ready();
+}
+
+///////////////////////////////////
+
+void reboot()
+{
+    Serial.println(F("Restarting..."));
+#ifdef ESP32
+    sPreferences.end();
+    ESP.restart();
+#elif defined(REELTWO_AVR)
+    void (*resetArduino)() = NULL;
+    resetArduino();
+#else
+    Serial.println(F("Restart not supported."));
+#endif
 }
 
 ///////////////////////////////////
@@ -130,6 +146,22 @@ void processConfigureCommand(const char* cmd)
         sSettings = defaultSettings;
         updateSettings();
     }
+    else if (startswith(cmd, "#DPVERBOSE"))
+    {
+        bool verbose = (*cmd == '1');
+        if (verbose != sVerbose)
+        {
+            if (verbose)
+            {
+                Serial.print(F("Verbose mode enabled."));
+            }
+            else
+            {
+                Serial.print(F("Verbose mode disabled."));
+            }
+            sVerbose = verbose;
+        }
+    }
     else if (startswith(cmd, "#DPCONFIG"))
     {
         Serial.print("BaudRate="); Serial.println(sSettings.fBaudRate);
@@ -158,6 +190,10 @@ void processConfigureCommand(const char* cmd)
             Serial.print("Reboot baud rate: "); Serial.println(sSettings.fBaudRate);
             updateSettings();
         }
+    }
+    else if (startswith_P(cmd, F("#DPRESTART")))
+    {
+        reboot();
     }
 }
 
@@ -222,11 +258,13 @@ void loop()
         if (angle != sLastAngle || millis() - sLastReport > POSITION_RESEND_INTERVAL)
         {
             char buf[20];
-            snprintf(buf, sizeof(buf), "#DP@%d\r", angle);
-        #ifndef USE_DOME_SENSOR_DEBUG
-            Serial.print(buf);
-        #endif
-            REPORT_SERIAL.print(buf);
+            snprintf(buf, sizeof(buf), "#DP@%d", angle);
+            if (sVerbose)
+            {
+                Serial.print(F("POS: "));
+                Serial.println(angle);
+            }
+            REPORT_SERIAL.println(buf);
             sLastAngle = angle;
             sLastReport = millis();
         }
@@ -294,7 +332,7 @@ void loop()
             if (!processCommand(sCmdBuffer, !sCmdNextCommand))
             {
                 // command invalid abort buffer
-                DEBUG_PRINT("Unrecognized: "); DEBUG_PRINTLN(sCmdBuffer);
+                Serial.print(F("Unrecognized: ")); Serial.println(sCmdBuffer);
                 sWaitNextSerialCommand = 0;
                 end = nullptr;
             }
@@ -320,7 +358,7 @@ void loop()
             if (!processCommand(sBuffer, !sNextCommand))
             {
                 // command invalid abort buffer
-                DEBUG_PRINT("Unrecognized: "); DEBUG_PRINTLN(sBuffer);
+                Serial.print("Unrecognized: "); Serial.println(sBuffer);
                 sWaitNextSerialCommand = 0;
                 end = nullptr;
             }
