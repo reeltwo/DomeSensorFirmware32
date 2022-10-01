@@ -9,7 +9,7 @@
 // CONFIGURABLE OPTIONS
 ///////////////////////////////////
 
-#define SERIAL_BAUD_RATE                    57600
+#define SERIAL_BAUD_RATE                    115200
 #define CONSOLE_BUFFER_SIZE                 300
 #define COMMAND_BUFFER_SIZE                 256
 
