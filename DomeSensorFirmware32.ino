@@ -153,11 +153,11 @@ void processConfigureCommand(const char* cmd)
         {
             if (verbose)
             {
-                Serial.print(F("Verbose mode enabled."));
+                Serial.println(F("Verbose mode enabled."));
             }
             else
             {
-                Serial.print(F("Verbose mode disabled."));
+                Serial.println(F("Verbose mode disabled."));
             }
             sVerbose = verbose;
         }
