@@ -1,9 +1,15 @@
-//#define USE_DEBUG
-//#define USE_DOME_SENSOR_DEBUG
+#define USE_DEBUG
+#undef USE_DOME_SENSOR_DEBUG
 #include "ReelTwo.h"
+#include "core/AnimatedEvent.h"
 #include "drive/DomeSensorRing.h"
 #include "core/StringUtils.h"
+#ifdef ESP32
+#define USE_PREFERENCES
+#endif
+#ifdef USE_PREFERENCES
 #include <Preferences.h>
+#endif
 
 ///////////////////////////////////
 // CONFIGURABLE OPTIONS
@@ -18,9 +24,26 @@
 
 ///////////////////////////////////
 
-#define TXD1_PIN    17
-#define RXD1_PIN    16  /* not used */
-#define REPORT_SERIAL Serial1
+#if defined(ARDUINO_ARCH_RP2040)
+ #define TXD1_PIN    5
+ #define RXD1_PIN    20   /* not used */
+ #define REPORT_SERIAL Serial2
+ #define REPORT_SERIAL_SETUP(baud,rx,tx) {\
+    REPORT_SERIAL.begin(baud); \
+ }
+#elif defined(ESP32)
+ #ifdef PIN_NEOPIXEL
+  #define TXD1_PIN    32
+  #define RXD1_PIN    7   /* not used */
+ #else
+  #define TXD1_PIN    17
+  #define RXD1_PIN    16  /* not used */
+ #endif
+ #define REPORT_SERIAL Serial1
+ #define REPORT_SERIAL_SETUP(baud,rx,tx) REPORT_SERIAL.begin(baud, SERIAL_8N1, RXD1_PIN, TXD1_PIN);
+#else
+#error Unsupported board
+#endif
 
 ///////////////////////////////////
 
@@ -30,9 +53,11 @@ struct DomeSensorSettings
 };
 
 DomeSensorSettings sSettings;
-Preferences sPreferences;
 
+#ifdef USE_PREFERENCES
+Preferences sPreferences;
 #define PREFERENCE_KEY  "settings"
+#endif
 
 ///////////////////////////////////
 
@@ -47,10 +72,24 @@ static uint32_t sEndTesting;
 static bool sTestOne;
 static unsigned sSensorMask;
 static bool sVerbose;
+static bool sDebug;
 
 ///////////////////////////////////
 
 DomeSensorRing sDomePosition;
+#ifdef PIN_NEOPIXEL
+#include "core/SingleStatusLED.h"
+enum {
+    kNormalModeHome = 0,
+    kNormalModeMoving = 1,
+};
+unsigned sCurrentMode = kNormalModeHome;
+static constexpr uint8_t kStatusColors[][4][3] = {
+      { {  0,   2,    0} , {   0,    2,    0} , {  0,   2,    0} , {   0,    2,    0}  },  // normal mode home (all green)
+      { {  0,   2,    0} , {   2,    2,    0} , {  0,   2,    0} , {   2,    2,    0}  },  // normal mode moving (green,yellow,green,yellow)
+};
+SingleStatusLED<PIN_NEOPIXEL> statusLED(kStatusColors, SizeOfArray(kStatusColors));
+#endif
 
 ///////////////////////////////////
 
@@ -60,6 +99,7 @@ void setup()
 #ifndef USE_DEBUG
     Serial.begin(DEFAULT_BAUD_RATE);
 #endif
+#ifdef USE_PREFERENCES
     if (sPreferences.begin("domesensor"))
     {
         DomeSensorSettings settings;
@@ -82,24 +122,38 @@ void setup()
     {
         Serial.println("Failed to initialize preferences.");
     }
-    REPORT_SERIAL.begin(sSettings.fBaudRate, SERIAL_8N1, RXD1_PIN, TXD1_PIN);
+#endif
+#ifdef REPORT_SERIAL_SETUP
+    REPORT_SERIAL_SETUP(sSettings.fBaudRate, RXD1_PIN, TXD1_PIN)
+#endif
 
     SetupEvent::ready();
+#ifdef PIN_NEOPIXEL
+    statusLED.setMode(kNormalModeHome);
+    statusLED.setDelay(300); // Fast blink
+#endif
+
+#if defined(NEOPIXEL_POWER)
+    pinMode(NEOPIXEL_POWER, OUTPUT);
+    digitalWrite(NEOPIXEL_POWER, HIGH);
+#endif
 }
 
 ///////////////////////////////////
 
 void reboot()
 {
-    Serial.println(F("Restarting..."));
+    Serial.println("Restarting...");
 #ifdef ESP32
+  #ifdef USE_PREFERENCES
     sPreferences.end();
+  #endif
     ESP.restart();
 #elif defined(REELTWO_AVR)
     void (*resetArduino)() = NULL;
     resetArduino();
 #else
-    Serial.println(F("Restart not supported."));
+    Serial.println("Restart not supported.");
 #endif
 }
 
@@ -107,7 +161,9 @@ void reboot()
 
 static void updateSettings()
 {
+#ifdef USE_PREFERENCES
     sPreferences.putBytes(PREFERENCE_KEY, &sSettings, sizeof(sSettings));
+#endif
     Serial.println("Updated");
 }
 
@@ -146,6 +202,22 @@ void processConfigureCommand(const char* cmd)
         sSettings = defaultSettings;
         updateSettings();
     }
+    else if (startswith(cmd, "#DPDEBUG"))
+    {
+        bool debug = (*cmd == '1');
+        if (debug != sDebug)
+        {
+            if (debug)
+            {
+                Serial.println("Debug mode enabled.");
+            }
+            else
+            {
+                Serial.println("Debug mode disabled.");
+            }
+            sDebug = debug;
+        }
+    }
     else if (startswith(cmd, "#DPVERBOSE"))
     {
         bool verbose = (*cmd == '1');
@@ -153,11 +225,11 @@ void processConfigureCommand(const char* cmd)
         {
             if (verbose)
             {
-                Serial.println(F("Verbose mode enabled."));
+                Serial.println("Verbose mode enabled.");
             }
             else
             {
-                Serial.println(F("Verbose mode disabled."));
+                Serial.println("Verbose mode disabled.");
             }
             sVerbose = verbose;
         }
@@ -191,7 +263,7 @@ void processConfigureCommand(const char* cmd)
             updateSettings();
         }
     }
-    else if (startswith_P(cmd, F("#DPRESTART")))
+    else if (startswith(cmd, "#DPRESTART"))
     {
         reboot();
     }
@@ -244,11 +316,17 @@ static void printBinary(unsigned num, unsigned places)
 {
     if (places)
         printBinary(num >> 1, places-1);
-    Serial.print((num & 1) ? '1' : '0');
+    Serial.print((num & 1) ? 'B' : '-');
+    Serial.print(' ');
 }
 
 void loop()
 {
+    AnimatedEvent::process();
+
+#ifdef PIN_NEOPIXEL
+    static uint32_t sBlinkOut;
+#endif
     static short sLastAngle = -1;
     static uint32_t sLastReport = 0;
     short angle = sDomePosition.getAngle();
@@ -259,14 +337,50 @@ void loop()
         {
             char buf[20];
             snprintf(buf, sizeof(buf), "#DP@%d", angle);
-            if (sVerbose)
+        #ifdef REPORT_SERIAL
+            REPORT_SERIAL.println(buf);
+        #endif
+            if (sDebug)
             {
-                Serial.print(F("POS: "));
+                auto sensors = sDomePosition.readSensors();
+                Serial.print("POS: ");
+                auto domeAngle = sDomePosition.getDomeAngle(sensors);
+                if (domeAngle > 0)
+                {
+                    Serial.print(domeAngle);
+                    Serial.print((domeAngle < 10) ? "   " : (domeAngle < 100) ? "  " : " ");
+                }
+                else
+                {
+                    Serial.print("--- ");
+                }
+                printBinary(sensors, 8);
+                Serial.print(": ");
                 Serial.println(angle);
             }
-            REPORT_SERIAL.println(buf);
+            else if (sVerbose)
+            {
+                Serial.print("POS: ");
+                Serial.println(angle);
+            }
+        #ifdef PIN_NEOPIXEL
+            if (angle != sLastAngle)
+            {
+                statusLED.setMode(kNormalModeMoving);
+                sBlinkOut = millis() + POSITION_RESEND_INTERVAL;
+            }
+        #endif
             sLastAngle = angle;
             sLastReport = millis();
+        }
+        else
+        {
+        #ifdef PIN_NEOPIXEL
+            if (sBlinkOut < millis())
+            {
+                statusLED.setMode(kNormalModeHome);
+            }
+        #endif
         }
     }
 
@@ -332,7 +446,7 @@ void loop()
             if (!processCommand(sCmdBuffer, !sCmdNextCommand))
             {
                 // command invalid abort buffer
-                Serial.print(F("Unrecognized: ")); Serial.println(sCmdBuffer);
+                Serial.print("Unrecognized: "); Serial.println(sCmdBuffer);
                 sWaitNextSerialCommand = 0;
                 end = nullptr;
             }
